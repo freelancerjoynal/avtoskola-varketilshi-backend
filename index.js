@@ -16,18 +16,13 @@ const client = new MongoClient(uri, {
   serverApi: ServerApiVersion.v1,
 });
 
-//console.log(uri);
-
-// JWT Secret Key
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
-// Middleware to verify JWT token and check if user is admin
 const verifyAdmin = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
     return res.status(401).json({ error: "Unauthorized: No token provided" });
   }
-
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     if (decoded.role !== "admin") {
@@ -40,14 +35,6 @@ const verifyAdmin = (req, res, next) => {
   }
 };
 
-async function generateHash() {
-  const password = "admin05+";
-  const hashedPassword = await bcrypt.hash(password, 10);
-  console.log("Hashed password:", hashedPassword);
-}
-
-generateHash();
-
 async function run() {
   try {
     const questionCollection = client.db("traffic-master").collection("questions");
@@ -56,33 +43,28 @@ async function run() {
     // Admin Login
     app.post("/admin/login", async (req, res) => {
       const { username, password } = req.body;
-
       const admin = await adminCollection.findOne({ username });
       if (!admin) {
         return res.status(404).json({ error: "Admin not found" });
       }
-
       const isPasswordValid = await bcrypt.compare(password, admin.password);
       if (!isPasswordValid) {
         return res.status(401).json({ error: "Invalid password" });
       }
-
       const token = jwt.sign({ username: admin.username, role: "admin" }, JWT_SECRET, {
         expiresIn: "1h",
       });
-
       res.json({ token });
     });
 
-    // Create a new admin (Admin only)
+    // Create Admin
     app.post("/admin/create", verifyAdmin, async (req, res) => {
       try {
-        const { username, password,role } = req.body;
+        const { username, password, role } = req.body;
         const existingAdmin = await adminCollection.findOne({ username });
         if (existingAdmin) {
           return res.status(400).json({ error: "Admin already exists" });
         }
-
         const hashedPassword = await bcrypt.hash(password, 10);
         const newAdmin = { username, password: hashedPassword, role };
         const result = await adminCollection.insertOne(newAdmin);
@@ -92,7 +74,7 @@ async function run() {
       }
     });
 
-    // Get all admins (Admin only)
+    // Get all Admins
     app.get("/admin/all", verifyAdmin, async (req, res) => {
       try {
         const admins = await adminCollection.find().toArray();
@@ -102,7 +84,7 @@ async function run() {
       }
     });
 
-    // Delete an admin (Admin only)
+    // Delete Admin
     app.delete("/admin/delete/:id", verifyAdmin, async (req, res) => {
       try {
         const id = req.params.id;
@@ -113,22 +95,78 @@ async function run() {
       }
     });
 
-    // Add a new question (Admin only)
-    app.post("/questions/add-question", verifyAdmin, async (req, res) => {
+    // Update Admin Password
+    app.put("/admin/update-password", verifyAdmin, async (req, res) => {
       try {
-        const newQuestion = req.body;
-        const result = await questionCollection.insertOne(newQuestion);
+        const { username, newPassword } = req.body;
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        const result = await adminCollection.updateOne(
+          { username },
+          { $set: { password: hashedPassword } }
+        );
+        res.json({ message: "Password updated successfully" });
+      } catch (error) {
+        res.status(500).json({ error: "Failed to update password" });
+      }
+    });
+
+    // Forgot Password
+    app.post("/admin/forgot-password", async (req, res) => {
+      try {
+        const { username, newPassword } = req.body;
+        const admin = await adminCollection.findOne({ username });
+        if (!admin) {
+          return res.status(404).json({ error: "Admin not found" });
+        }
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        const result = await adminCollection.updateOne(
+          { username },
+          { $set: { password: hashedPassword } }
+        );
+        res.json({ message: "Password reset successfully" });
+      } catch (error) {
+        res.status(500).json({ error: "Failed to reset password" });
+      }
+    });
+
+    // Add Question with Options
+    app.post("/questions/add-question", verifyAdmin, async (req, res) => {
+    
+    console.log(req.body);
+      try {
+        const { question, topic, imageUrl, correctOption } = req.body;
+
+        // Convert options from indexed fields into an array
+        const options = Object.keys(req.body)
+          .filter((key) => key.startsWith("options["))
+          .sort((a, b) => {
+            // Sort by index like "options[0]", "options[1]"
+            return parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]);
+          })
+          .map((key) => req.body[key]);
+    
+        const newQuestion = {
+          question,
+          options,
+          answer: correctOption,
+          topics: topic,
+          image: imageUrl,
+        };
+    
+          const result = await questionCollection.insertOne(newQuestion);
         res.json(result);
+        console.log(result);
       } catch (error) {
         res.status(500).json({ error: "Failed to add question" });
       }
     });
 
-    // Edit a question (Admin only)
-    app.put("/questions/edit-question/:id", verifyAdmin, async (req, res) => {
+    // Update Question
+    app.put("/questions/update-question/:id", verifyAdmin, async (req, res) => {
       try {
         const id = req.params.id;
-        const updatedQuestion = req.body;
+        const { text, options, correctOption } = req.body;
+        const updatedQuestion = { text, options, correctOption };
         const result = await questionCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: updatedQuestion }
@@ -139,7 +177,7 @@ async function run() {
       }
     });
 
-    // Delete a question (Admin only)
+    // Delete Question
     app.delete("/questions/delete-question/:id", verifyAdmin, async (req, res) => {
       try {
         const id = req.params.id;
@@ -150,27 +188,14 @@ async function run() {
       }
     });
 
-    // Get all questions (Public)
+    // Get all Questions
     app.get("/questions/all-questions", async (req, res) => {
       try {
-        const topics = req.query.topics;
-        let filter = {};
-
-        if (topics) {
-          const topicsArray = topics.split(",");
-          filter = { topics: { $in: topicsArray } };
-        }
-
-        const result = await questionCollection.find(filter).toArray();
+        const result = await questionCollection.find().toArray();
         res.json(result);
       } catch (error) {
-        res.status(500).json({ error: "Internal server error" });
+        res.status(500).json({ error: "Failed to retrieve questions" });
       }
-    });
-
-    // Root route
-    app.get("/", async (req, res) => {
-      res.send("Traffic Master API");
     });
 
     app.listen(port, () => console.log(`Traffic Master running on ${port}`));
